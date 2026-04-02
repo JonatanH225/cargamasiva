@@ -7,7 +7,7 @@ let todosLosUsuarios = {};
 let lineaTiempo = []; 
 let cargando = false;
 
-const idCliente = 1;
+let idCliente = 1; // ✅ CAMBIADO A LET
 
 /**
  * 1. INICIALIZACIÓN
@@ -184,22 +184,48 @@ async function llenarSelectoresUI() {
 }
 
 /**
- * 2. MANEJO DE LOGIN
+ * 2. MANEJO DE LOGIN (Versión corregida)
  */
 async function manejarLogin() {
-    if (cargando) return;
-    const inputId = document.getElementById('id-usuario-input').value.trim();
-    if (!inputId) return;
-
-    const usuarioEncontrado = todosLosUsuarios[inputId];
-    if (usuarioEncontrado) {
-        usuarioActivo = usuarioEncontrado;
-        document.getElementById('nombre-sesion').innerText = usuarioActivo.nombre;
+    try {
+        if (cargando) return;
         
-        await llenarSelectoresUI(); 
-        await cargarUltimoMesPredeterminado();
-    } else {
-        alert("ID no reconocido.");
+        const inputId = document.getElementById('id-usuario-input').value.trim();
+        if (!inputId) {
+            alert("Por favor, ingrese un ID.");
+            return;
+        }
+
+        console.log("Intentando login para:", inputId); // Ver en consola
+
+        const usuarioEncontrado = todosLosUsuarios[inputId];
+        
+        if (usuarioEncontrado) {
+            // Seteamos las variables globales
+            usuarioActivo = usuarioEncontrado;
+            idCliente = usuarioActivo.id_cliente; 
+            
+            // Limpiamos memoria del motor para el nuevo usuario
+            if (typeof mesesCargados !== 'undefined') {
+                mesesCargados.clear();
+            }
+
+            // Actualizamos la interfaz
+            const elNombre = document.getElementById('nombre-sesion');
+            if (elNombre) elNombre.innerText = usuarioActivo.nombre;
+
+            updateLog(`🚀 Sesión iniciada: ${usuarioActivo.nombre}`);
+
+            // IMPORTANTE: Primero llenamos selectores, luego cargamos datos
+            await llenarSelectoresUI(); 
+            await cargarUltimoMesPredeterminado();
+
+        } else {
+            alert("ID de usuario no reconocido.");
+        }
+    } catch (error) {
+        console.error("ERROR CRÍTICO EN LOGIN:", error);
+        updateLog("❌ Error en el proceso de login. Revisa la consola.");
     }
 }
 
@@ -260,7 +286,7 @@ async function ejecutarConsultaFiltrada(fInicio, fFin) {
     const mesesNecesarios = obtenerMesesEnRango(fInicio, fFin);
     const archivosValidos = [];
 
-    // 2. Validar con URL Absoluta (Evita problemas de rutas en el Worker)
+    // 2. Validar con URL Absoluta
     for (const nombreMes of mesesNecesarios) {
         const rutaRelativa = `./${idCliente}/data/${nombreMes}/consolidado_${nombreMes}.parquet`;
         const urlFinal = rutaAbsoluta(rutaRelativa);
@@ -282,19 +308,30 @@ async function ejecutarConsultaFiltrada(fInicio, fFin) {
 
     const listaSQL = archivosValidos.map(f => `'${f}'`).join(', ');
 
+    // --- BLOQUE DE SEGURIDAD ---
+    // Obtenemos la cadena "placa IN ('ABC', 'DEF')" o "1=1"
+    const filtroSeguridad = obtenerFiltroSeguridad();
+
     try {
-        // Ejecutar conteos (unificados para eficiencia)
+        // Definimos la base de la consulta para no repetir código
+        // IMPORTANTE: Aquí se aplica el filtro de fechas Y el de seguridad
+        const sqlBase = `
+            FROM read_parquet([${listaSQL}], union_by_name=true)
+            WHERE CAST(fecha AS DATE) BETWEEN '${fInicio}' AND '${fFin}'
+            AND ${filtroSeguridad}
+        `;
+
+        // 3. Ejecutar conteos (Totales)
         const resTotales = await conn.query(`
             SELECT 
                 COUNT(*)::INTEGER as total_filas, 
                 COUNT(DISTINCT placa)::INTEGER as total_unidades
-            FROM read_parquet([${listaSQL}], union_by_name=true)
-            WHERE CAST(fecha AS DATE) BETWEEN '${fInicio}' AND '${fFin}'
+            ${sqlBase}
         `);
         
         const resumen = resTotales.toArray()[0] || { total_filas: 0, total_unidades: 0 };
 
-        // Ejecutar Tabla
+        // 4. Ejecutar Tabla (Datos detallados)
         const resTabla = await conn.query(`
             SELECT 
                 strftime(fecha, '%Y-%m-%d') as fecha_real, placa, flota,
@@ -303,24 +340,23 @@ async function ejecutarConsultaFiltrada(fInicio, fFin) {
                 frenadas as fren, giros, excesos_velocidad as exc,
                 maxima_velocidad as v_max, ROUND(velocidad_promedio, 2) as v_prom,
                 trayectos_realizados as tray
-            FROM read_parquet([${listaSQL}], union_by_name=true)
-            WHERE CAST(fecha AS DATE) BETWEEN '${fInicio}' AND '${fFin}'
+            ${sqlBase}
             ORDER BY fecha DESC LIMIT 2000
         `);
 
         const datos = resTabla.toArray();
 
-        // --- ACTUALIZAR UI (FORMA SEGURA) ---
-        // Esta función evita el error de "null" si el ID no existe en el HTML
+        // --- ACTUALIZAR UI ---
         const safeSetText = (id, value) => {
             const el = document.getElementById(id);
             if (el) el.innerText = value.toLocaleString();
         };
 
+        // Ahora estos valores serán de 10 unidades para el Analista Junior
         safeSetText('count-unidades', resumen.total_unidades);
         safeSetText('count-bloque', datos.length);
-        safeSetText('count', resumen.total_filas);        // Verifica si es 'count' o 'count-total'
-        safeSetText('count-total', resumen.total_filas);  // Por si acaso usas este ID
+        safeSetText('count', resumen.total_filas);
+        safeSetText('count-total', resumen.total_filas);
         safeSetText('count-celdas', resumen.total_filas * 13);
 
         mostrarTabla(datos);
@@ -403,10 +439,23 @@ async function detectarArchivoCorrupto(urls) {
  * FUNCIONES AUXILIARES (HELPERS)
  */
 function obtenerFiltroSeguridad() {
+    // 1. Bloqueo total si no hay sesión
     if (!usuarioActivo) return "1=0";
-    if (usuarioActivo.placas_autorizadas.length > 4000) return "1=1";
-    const placas = usuarioActivo.placas_autorizadas.map(p => `'${p}'`).join(', ');
-    return `d.placa IN (${placas})`;
+
+    // 2. Optimización para Administrador (8,000 placas)
+    // Si tiene más de la mitad de la flota, dejamos que vea todo sin procesar la lista larga
+    if (usuarioActivo.placas_autorizadas.length > 4000) {
+        return "1=1"; 
+    }
+
+    // 3. Filtro específico para Analistas (Junior, Senior, etc.)
+    // Limpiamos espacios y envolvemos en comillas simples
+    const placas = usuarioActivo.placas_autorizadas
+        .map(p => `'${p.trim()}'`)
+        .join(', ');
+
+    // Retornamos el filtro simple (sin prefijo d. a menos que uses alias en el FROM)
+    return `placa IN (${placas})`;
 }
 
 async function cargarDiccionarioUsuarios() {
