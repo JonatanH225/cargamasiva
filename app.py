@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
-def generar_historico_un_ano(id_cliente=1, num_vehiculos=5000):
+def generar_historico_un_ano(id_cliente=1, num_vehiculos=8000):
     print(f"🚀 Iniciando generación histórica para Cliente ID: {id_cliente}")
     
     # 1. Configuración de rango: Marzo 2025 a Marzo 2026

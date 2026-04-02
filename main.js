@@ -13,6 +13,9 @@ const idCliente = 1;
  * 1. INICIALIZACIÓN
  */
 async function init() {
+    // 1. DECLARAR EL INICIO AQUÍ (Fuera o al puro principio del try)
+    const tInicioInit = performance.now(); 
+
     try {
         updateStatus("⚡ Inicializando Motor...");
         const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
@@ -42,11 +45,15 @@ async function init() {
 
         // Listener para que al cambiar flota se filtren las placas del select
         document.getElementById('select-flota').addEventListener('change', actualizarPlacasPorFlota);
+        document.getElementById('btn-limpiar').addEventListener('click', limpiarFiltros);
 
         updateStatus("🔑 Esperando Ingreso...");
         updateLog("ℹ️ Ingrese su ID de usuario para comenzar.");
 
-        document.getElementById('btn-limpiar').addEventListener('click', limpiarFiltros);
+        // 2. CÁLCULO DEL TIEMPO (Ahora sí existe la variable tInicioInit)
+        const tFinInit = performance.now();
+        const tiempoCarga = ((tFinInit - tInicioInit) / 1000).toFixed(2);
+        updateLog(`🚀 Motor e índices listos en **${tiempoCarga}s**`);
 
     } catch (error) {
         console.error(error);
@@ -67,17 +74,22 @@ function limpiarFiltros() {
     if (selectFlota) selectFlota.value = 'TODAS';
     if (selectPlaca) {
         selectPlaca.value = 'TODAS';
-        // Si tienes la lógica de actualizar placas al cambiar flota, la llamamos
+        // Actualiza el listado de placas para que coincida con "Todas las Flotas"
         actualizarPlacasPorFlota(); 
     }
 
-    // 3. Limpiar Tabla y Contadores
+    // 3. Limpiar Tabla y todos los Contadores
     const cuerpo = document.getElementById('cuerpo-tabla');
-    const contador = document.getElementById('count-bloque');
     if (cuerpo) cuerpo.innerHTML = '';
-    if (contador) contador.innerText = '0';
+    
+    // Reseteo visual de los indicadores
+    const idsContadores = ['count-bloque', 'count', 'count-unidades'];
+    idsContadores.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerText = '0';
+    });
 
-    updateLog("🧹 Filtros y tabla limpiados.");
+    updateLog("🧹 Filtros, tabla y contadores limpiados.");
 }
 
 /**
@@ -235,65 +247,90 @@ async function procesarFiltroFecha() {
     }
 }
 
+
+
+function rutaAbsoluta(path) {
+    return new URL(path, window.location.href).href;
+}
+
 async function ejecutarConsultaFiltrada(fInicio, fFin) {
-    if (mesesCargados.size === 0) return;
-    const listaArchivos = Array.from(mesesCargados).map(f => `'${f}'`).join(', ');
+    const t0 = performance.now();
     
-    const filtroSeguridad = obtenerFiltroSeguridad();
-    const pMasivas = obtenerValoresDesdeTextArea('input-placas-multiples');
-    const fMasivas = obtenerValoresDesdeTextArea('input-flotas-multiples');
-    const fSel = document.getElementById('select-flota').value;
-    const pSel = document.getElementById('select-placa').value;
+    // 1. Obtener meses necesarios
+    const mesesNecesarios = obtenerMesesEnRango(fInicio, fFin);
+    const archivosValidos = [];
 
-    let filtroUI = "1=1";
-
-    // PRIORIDAD 1: Placas Manuales
-    if (pMasivas.length > 0) {
-        const listaSql = pMasivas.map(p => `'${p}'`).join(', ');
-        filtroUI = `d.placa IN (${listaSql})`;
-        updateLog(`📝 Filtrando por ${pMasivas.length} placas manuales.`);
-    } 
-    // PRIORIDAD 2: Flotas Manuales (Aquí estaba el fallo)
-    else if (fMasivas.length > 0) {
-        const listaSql = fMasivas.map(f => `'${f}'`).join(', ');
-        filtroUI = `m.flota IN (${listaSql})`;
-        updateLog(`📝 Filtrando por ${fMasivas.length} flotas manuales.`);
-    } 
-    // PRIORIDAD 3: Selectores normales
-    else {
-        if (fSel !== "TODAS") filtroUI += ` AND m.flota = '${fSel}'`;
-        if (pSel !== "TODAS") filtroUI += ` AND d.placa = '${pSel}'`;
+    // 2. Validar con URL Absoluta (Evita problemas de rutas en el Worker)
+    for (const nombreMes of mesesNecesarios) {
+        const rutaRelativa = `./${idCliente}/data/${nombreMes}/consolidado_${nombreMes}.parquet`;
+        const urlFinal = rutaAbsoluta(rutaRelativa);
+        
+        try {
+            const resp = await fetch(urlFinal, { method: 'HEAD' });
+            if (resp.ok) {
+                archivosValidos.push(urlFinal);
+            }
+        } catch (e) {
+            console.warn(`No disponible: ${nombreMes}`);
+        }
     }
 
-    const sql = `
-        SELECT 
-            strftime(d.fecha, '%Y-%m-%d') as fecha_real, 
-            d.placa, 
-            m.flota,
-            ROUND(SUM(d.distancia), 2) as km,
-            ROUND(SUM(d.combustible), 2) as gal,
-            MAX(d.maxima_velocidad) as v_max,
-            ROUND(AVG(d.velocidad_promedio), 2) as v_prom,
-            SUM(d.excesos_velocidad) as exc
-        FROM read_parquet([${listaArchivos}], union_by_name=true) AS d
-        INNER JOIN maestro AS m ON d.placa = m.placa
-        WHERE (${filtroSeguridad})
-          AND (${filtroUI})
-          AND CAST(d.fecha AS DATE) BETWEEN '${fInicio}' AND '${fFin}'
-        GROUP BY ALL
-        ORDER BY fecha_real DESC, km DESC
-        LIMIT 2000
-    `;
+    if (archivosValidos.length === 0) {
+        updateLog("⚠️ No se encontraron archivos para el periodo seleccionado.");
+        return;
+    }
+
+    const listaSQL = archivosValidos.map(f => `'${f}'`).join(', ');
 
     try {
-        const res = await conn.query(sql);
-        const datos = res.toArray();
-        document.getElementById('count-bloque').innerText = datos.length.toLocaleString();
+        // Ejecutar conteos (unificados para eficiencia)
+        const resTotales = await conn.query(`
+            SELECT 
+                COUNT(*)::INTEGER as total_filas, 
+                COUNT(DISTINCT placa)::INTEGER as total_unidades
+            FROM read_parquet([${listaSQL}], union_by_name=true)
+            WHERE CAST(fecha AS DATE) BETWEEN '${fInicio}' AND '${fFin}'
+        `);
+        
+        const resumen = resTotales.toArray()[0] || { total_filas: 0, total_unidades: 0 };
+
+        // Ejecutar Tabla
+        const resTabla = await conn.query(`
+            SELECT 
+                strftime(fecha, '%Y-%m-%d') as fecha_real, placa, flota,
+                ROUND(distancia, 2) as km, ROUND(combustible, 2) as gal,
+                ROUND(combustible_idle, 2) as idle, aceleraciones as acel,
+                frenadas as fren, giros, excesos_velocidad as exc,
+                maxima_velocidad as v_max, ROUND(velocidad_promedio, 2) as v_prom,
+                trayectos_realizados as tray
+            FROM read_parquet([${listaSQL}], union_by_name=true)
+            WHERE CAST(fecha AS DATE) BETWEEN '${fInicio}' AND '${fFin}'
+            ORDER BY fecha DESC LIMIT 2000
+        `);
+
+        const datos = resTabla.toArray();
+
+        // --- ACTUALIZAR UI (FORMA SEGURA) ---
+        // Esta función evita el error de "null" si el ID no existe en el HTML
+        const safeSetText = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.innerText = value.toLocaleString();
+        };
+
+        safeSetText('count-unidades', resumen.total_unidades);
+        safeSetText('count-bloque', datos.length);
+        safeSetText('count', resumen.total_filas);        // Verifica si es 'count' o 'count-total'
+        safeSetText('count-total', resumen.total_filas);  // Por si acaso usas este ID
+        safeSetText('count-celdas', resumen.total_filas * 13);
+
         mostrarTabla(datos);
-        updateLog(`📊 Vista: ${datos.length} filas.`);
+        
+        const duracion = ((performance.now() - t0) / 1000).toFixed(3);
+        updateLog(`⏱️ Analizados **${resumen.total_filas.toLocaleString()}** registros en **${duracion}s**`);
+
     } catch (e) {
-        console.error("Error SQL:", e);
-        updateLog("❌ Error en la consulta SQL. Revisa los nombres de las flotas.");
+        console.error("Error en DuckDB:", e);
+        updateLog("❌ Error procesando datos. Revisa la consola.");
     }
 }
 
@@ -350,6 +387,18 @@ if (placasTextArea.length > 0) {
     }
 }
 
+async function detectarArchivoCorrupto(urls) {
+    updateLog("🛠️ Verificando integridad de archivos...");
+    for (const url of urls) {
+        try {
+            await conn.query(`SELECT COUNT(*) FROM read_parquet('${url}')`);
+        } catch (e) {
+            updateLog(`❌ ARCHIVO CORRUPTO DETECTADO: ${url}`);
+            console.error(`El archivo ${url} está mal formado o es muy grande para el servidor actual.`);
+        }
+    }
+}
+
 /**
  * FUNCIONES AUXILIARES (HELPERS)
  */
@@ -368,7 +417,7 @@ async function cargarDiccionarioUsuarios() {
 
 async function autodescubrirMeses() {
     let fechaBusqueda = new Date(); 
-    const limitePasado = new Date(2024, 0, 1); 
+    const limitePasado = new Date(2023, 0, 1); 
     lineaTiempo = [];
     while (fechaBusqueda >= limitePasado) {
         const anio = fechaBusqueda.getFullYear();
@@ -399,6 +448,7 @@ function mostrarTabla(datos) {
     const cuerpo = document.getElementById('cuerpo-tabla');
     cuerpo.innerHTML = '';
     const fragmento = document.createDocumentFragment();
+    
     datos.forEach(fila => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
@@ -407,9 +457,14 @@ function mostrarTabla(datos) {
             <td>${fila.flota}</td>
             <td>${Number(fila.km).toLocaleString()}</td>
             <td>${Number(fila.gal).toLocaleString()}</td>
+            <td>${Number(fila.idle).toLocaleString()}</td>
+            <td>${fila.acel}</td>
+            <td>${fila.fren}</td>
+            <td>${fila.giros}</td>
+            <td>${fila.exc}</td>
             <td>${fila.v_max}</td>
             <td>${fila.v_prom}</td>
-            <td>${fila.exc}</td>
+            <td>${fila.tray}</td>
         `;
         fragmento.appendChild(tr);
     });
