@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Analítico - Flota Widetech</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+    <style>
+        body { 
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
+            margin: 20px; 
+            color: #333; 
+            background-color: #f4f7f9; 
+        }
+        
+        h2 { color: #1565c0; margin-bottom: 25px; }
+
+        #log { 
+            background: #ffffff; 
+            padding: 12px; 
+            border: 1px solid #cfd8dc; 
+            height: 120px; 
+            overflow-y: auto; 
+            font-family: 'Consolas', monospace; 
+            font-size: 12px; 
+            margin-bottom: 20px; 
+            border-radius: 6px;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.05);
+        }
+        
+        .stats { display: flex; gap: 15px; margin-bottom: 20px; }
+        .card { 
+            padding: 15px; 
+            border-radius: 8px; 
+            background: #fff; 
+            flex: 1; 
+            border: 1px solid #e0e0e0; 
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05); 
+            transition: transform 0.2s;
+        }
+        .card:hover { transform: translateY(-2px); }
+        .card strong { color: #1976d2; display: block; margin-bottom: 8px; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.5px; }
+        .card span { font-size: 1.6em; font-weight: bold; color: #37474f; }
+        
+        #tabla-contenedor { 
+            max-height: 600px; 
+            overflow-y: auto; 
+            border: 1px solid #cfd8dc; 
+            border-radius: 8px;
+            background: white;
+            position: relative;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.03);
+        }
+
+        table { width: 100%; border-collapse: collapse; min-width: 800px; }
+        
+        thead { 
+            position: sticky; 
+            top: 0; 
+            background: #1976d2; 
+            color: white; 
+            z-index: 10; 
+            box-shadow: 0 2px 2px rgba(0,0,0,0.1);
+        }
+        
+        th { padding: 14px; text-align: left; font-size: 0.9em; font-weight: 600; }
+        td { padding: 12px; text-align: left; border-bottom: 1px solid #eceff1; font-size: 0.95em; }
+        tr:hover { background-color: #f1f8ff; }
+
+        .loader-container {
+            display: none;
+            padding: 20px;
+            text-align: center;
+            background: #fff;
+        }
+
+        .spinner {
+            width: 35px;
+            height: 35px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #1976d2;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .btn {
+            border: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            color: white;
+        }
+        .btn-primary { background: #1976d2; }
+        .btn-success { background: #2e7d32; }
+        .btn-login { background: #4caf50; }
+
+        select, input[type="date"], input[type="text"] {
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            outline: none;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>🚀 Inteligencia de Flota: Análisis Progresivo</h2>
+
+    <div class="card" style="margin-bottom: 20px; display: flex; align-items: center; gap: 15px; background: #f8f9fa;">
+        <strong>👤 Acceso:</strong>
+        <input type="text" id="id-usuario-input" placeholder="ID Usuario" style="width: 120px;">
+        <button id="btn-login" class="btn btn-login">Validar</button>
+        
+        <div id="info-sesion" style="margin-left: auto; font-size: 0.9em; color: #555;">
+            Usuario: <strong id="nombre-sesion" style="color: #1976d2;">Invitado</strong>
+        </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 20px; display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+        <strong>📅 Periodo:</strong>
+        <input type="date" id="fecha-inicio">
+        <span>a</span>
+        <input type="date" id="fecha-fin">
+
+        <strong style="margin-left: 10px;">🚛 Flota:</strong>
+        <select id="select-flota" style="min-width: 150px;">
+            <option value="TODAS">-- Todas --</option>
+        </select>
+
+        <strong style="margin-left: 10px;">🚗 Placa:</strong>
+        <select id="select-placa" style="min-width: 120px;">
+            <option value="TODAS">-- Todas --</option>
+        </select>
+
+        <textarea id="input-placas-multiples" placeholder="Pega aquí las placas separadas por comas, espacios o saltos de línea..."></textarea>
+
+        <button id="btn-limpiar" style="background-color: #f44336; color: white;">Limpiar Filtros</button>
+        <button id="btn-filtrar" class="btn btn-primary" style="margin-left: auto;">Filtrar</button>
+        <button id="btn-exportar" class="btn btn-success">Excel</button>
+    </div>
+   
+    <div class="stats">
+        <div class="card">
+            <strong>Estado Motor</strong>
+            <span id="status" style="font-size: 1.1em; color: #f57c00;">Cargando...</span>
+        </div>
+        <div class="card">
+            <strong>Unidades</strong>
+            <span id="count-unidades">0</span>
+        </div>
+        <div class="card">
+            <strong>Filas (Vista)</strong>
+            <span id="count-bloque">0</span>
+        </div>
+        <div class="card">
+            <strong>Total Registros</strong>
+            <span id="count">0</span>
+        </div>
+    </div>
+
+    <div id="log"></div>
+
+    <div id="tabla-contenedor">
+        <div id="loader" class="loader-container">
+            <div class="spinner"></div>
+            <div style="font-weight: bold; color: #1976d2; font-size: 0.9em;">Consultando Parquet + Maestro...</div>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Fecha</th> 
+                    <th>Placa</th>
+                    <th>Flota (Maestro)</th>
+                    <th>Km Totales</th>
+                    <th>Galones</th>
+                    <th>V. Máx</th>
+                    <th>V. Prom</th>
+                    <th>Exc.</th>
+                </tr>
+            </thead>
+            <tbody id="cuerpo-tabla"></tbody>
+        </table>
+    </div>
+
+    <script type="module" src="main.js"></script>
+</body>
+</html>
