@@ -309,16 +309,23 @@ async function ejecutarConsultaFiltrada(fInicio, fFin) {
     const listaSQL = archivosValidos.map(f => `'${f}'`).join(', ');
 
     // --- BLOQUE DE SEGURIDAD ---
-    // Obtenemos la cadena "placa IN ('ABC', 'DEF')" o "1=1"
     const filtroSeguridad = obtenerFiltroSeguridad();
 
+    // --- BLOQUE DE FILTROS UI ---
+    const valFlota = document.getElementById('select-flota')?.value || 'TODAS';
+    const valPlaca = document.getElementById('select-placa')?.value || 'TODAS';
+    
+    let sqlFiltrosUI = "";
+    if (valFlota !== 'TODAS') sqlFiltrosUI += ` AND flota = '${valFlota}'`;
+    if (valPlaca !== 'TODAS') sqlFiltrosUI += ` AND placa = '${valPlaca}'`;
+
     try {
-        // Definimos la base de la consulta para no repetir código
-        // IMPORTANTE: Aquí se aplica el filtro de fechas Y el de seguridad
+        // Definimos la base de la consulta combinando Seguridad + Filtros UI
         const sqlBase = `
             FROM read_parquet([${listaSQL}], union_by_name=true)
             WHERE CAST(fecha AS DATE) BETWEEN '${fInicio}' AND '${fFin}'
             AND ${filtroSeguridad}
+            ${sqlFiltrosUI}
         `;
 
         // 3. Ejecutar conteos (Totales)
@@ -352,7 +359,6 @@ async function ejecutarConsultaFiltrada(fInicio, fFin) {
             if (el) el.innerText = value.toLocaleString();
         };
 
-        // Ahora estos valores serán de 10 unidades para el Analista Junior
         safeSetText('count-unidades', resumen.total_unidades);
         safeSetText('count-bloque', datos.length);
         safeSetText('count', resumen.total_filas);
